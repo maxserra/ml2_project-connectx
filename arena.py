@@ -56,7 +56,7 @@ def train_q_learning_agent(env: Environment,
             agent.update_q_value(old_state=state, action=action, new_state=next_state, reward=reward)
 
             if done:
-                print(f"Final state reached: \n  - {next_state}\n  - reward {reward}\n  - info {info}\n------")
+                # print(f"Final state reached: \n  - {next_state}\n  - reward {reward}\n  - info {info}\n------")
                 break  # final state reached
 
     if resulting_agent_path is None and starting_agent_path is None:
