@@ -1,3 +1,13 @@
+import os
+import sys
+
+cwd = '/kaggle_simulations/agent/'
+if os.path.exists(cwd):
+    sys.path.append(cwd)
+else:
+    cwd = ''
+
+data = None
 
 
 def agent_func(observation, configuration):
