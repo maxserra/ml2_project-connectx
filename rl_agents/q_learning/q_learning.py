@@ -8,7 +8,7 @@ class QLearningAgent:
                  actions: List[str],
                  q_values: Dict[str, Dict[str, float]] = None,
                  gamma: float = 1,
-                 lr: float = 1.0,
+                 learning_rate: float = 1.0,
                  epsilon: float = 0.1,
                  threshold: float = 1e-2) -> None:
         '''Initialize with empty lookup table if none provided.'''
@@ -17,7 +17,7 @@ class QLearningAgent:
 
         # save hyperparameters
         self.gamma = gamma
-        self.learning_rate = lr
+        self.learning_rate = learning_rate
         self.threshold = threshold
         self.epsilon = epsilon  # exploration
 
@@ -28,7 +28,7 @@ class QLearningAgent:
         if state not in self.q_values.keys():
             self.q_values[state] = {}
         if action not in self.q_values[state].keys():
-            self.q_values[state][action] = abs(np.random.randn()) + 1
+            self.q_values[state][action] = np.random.random()
         # return value
         return self.q_values[state][action]
 
