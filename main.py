@@ -2,7 +2,7 @@
 
 def agent_func(observation, configuration):
     import numpy as np
-    from agents.q_learning.q_learning import QLearningAgent
+    from rl_agents.q_learning.q_learning import QLearningAgent
 
     actions = [str(x) for x in range(configuration["columns"])]
     q_agent = QLearningAgent(actions=actions)
