@@ -11,14 +11,19 @@ data = None
 
 
 def agent_func(observation, configuration):
-    import numpy as np
-    from rl_agents.q_learning.q_learning import QLearningAgent
+    # import numpy as np
+    # from rl_agents.q_learning.q_learning import QLearningAgent
 
-    actions = [str(x) for x in range(configuration["columns"])]
-    q_agent = QLearningAgent(actions=actions)
+    # actions = [str(x) for x in range(configuration["columns"])]
+    # q_agent = QLearningAgent(actions=actions)
 
-    state = str(observation["board"])
-    actions = [str(x) for x in np.argwhere(np.array(observation["board"])[:configuration["columns"]] == 0).flatten()]
-    optimal_action = q_agent.get_optimal_action(state=state, actions=actions)
+    # state = str(observation["board"])
+    # actions = [str(x) for x in np.argwhere(np.array(observation["board"])[:configuration["columns"]] == 0).flatten()]
+    # optimal_action = q_agent.get_optimal_action(state=state, actions=actions)
 
-    return int(optimal_action)
+    # return int(optimal_action)
+
+    board = observation["board"]
+    columns = configuration["columns"]
+
+    return [c for c in range(columns) if board[c] == 0][0]
