@@ -1,25 +1,22 @@
-# import os
-# import sys
+import os
+import sys
 
-from rl_agents.q_learning.q_learning import QLearningAgent
-from utils import get_possible_actions, convert_action_to_connectx_action
+cwd = '/kaggle_simulations/agent/'
+if os.path.exists(cwd):
+    sys.path.append(cwd)
+else:
+    cwd = ''
 
-# cwd = '/kaggle_simulations/agent/'
-# if os.path.exists(cwd):
-#     sys.path.append(cwd)
-# else:
-#     cwd = ''
-
-# data = None
+agent = None
 
 
 def agent_func(observation, configuration):
+    global agent
 
-    actions = [str(x) for x in range(configuration["columns"])]
-    q_agent = QLearningAgent(actions=actions)
+    import utils
 
-    state = str(observation["board"])
-    actions = get_possible_actions(n_cols=configuration["columns"], board=observation["board"])
-    optimal_action = q_agent.get_optimal_action(state=state, actions=actions)
+    if agent is None:
+        agent = utils.load_pretrained_agent(file_name="TabularQLearningAgent_connectx_6x7row4.pkl",
+                                            pretrained_agents_path="/kaggle_simulations/agent/pretrained_agents")
 
-    return convert_action_to_connectx_action(action=optimal_action)
+    return agent.agent_func(observation, configuration)
