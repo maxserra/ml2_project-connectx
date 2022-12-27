@@ -57,7 +57,7 @@ def dump_pretrained_agent(agent,
                           pretrained_agents_path: str = "pretrained_agents",
                           overwrite: bool = True) -> bool:
 
-    file_path = os.path.join(pretrained_agents_path, file_name, ".pkl.xz")
+    file_path = os.path.join(pretrained_agents_path, file_name + ".pkl.xz")
     if os.path.exists(file_path) and not overwrite:
         print(f"Provided file already exists '{file_path}' and it will NOT be overwritten.")
         return False
