@@ -1,4 +1,5 @@
 import os
+import lzma
 import pickle
 import numpy as np
 
@@ -40,13 +41,13 @@ def flip_state_marks(state: str, mark: int, agent_trained_on_mark: int):
 def load_pretrained_agent(file_name: str,
                           pretrained_agents_path: str = "pretrained_agents"):
 
-    file_path = os.path.join(pretrained_agents_path, file_name)
+    file_path = os.path.join(pretrained_agents_path, file_name + ".pkl.xz")
     if os.path.exists(file_path):
         print(f"Loading pretrained agent from '{file_path}'...")
-        with open(file_path, "rb") as file:
+        with lzma.open(file_path, "rb") as file:
             agent = pickle.load(file)
     else:
-        ValueError(f"Given pretrained agent path '{file_path}' not found.")
+        raise ValueError(f"Given pretrained agent path '{file_path}' not found.")
 
     return agent
 
@@ -56,13 +57,13 @@ def dump_pretrained_agent(agent,
                           pretrained_agents_path: str = "pretrained_agents",
                           overwrite: bool = True) -> bool:
 
-    file_path = os.path.join(pretrained_agents_path, file_name)
+    file_path = os.path.join(pretrained_agents_path, file_name, ".pkl.xz")
     if os.path.exists(file_path) and not overwrite:
         print(f"Provided file already exists '{file_path}' and it will NOT be overwritten.")
         return False
 
     print(f"Dumping pretrained agent to '{file_path}'...")
-    with open(file_path, "wb") as file:
+    with lzma.open(file_path, "wb") as file:
         pickle.dump(agent, file)
 
     return True
