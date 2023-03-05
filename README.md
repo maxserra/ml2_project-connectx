@@ -6,7 +6,7 @@ RL algorithms and the ConnectX Kaggle competition.
 
 ## Focus of the project
 
-Two player fully-observable games (e.g. tic-tac-toe, connect4, backgammon, chess) are learnable. In this project I want to explore a range of algorithms and compare them. Ultimately, I want to have a hih ranking submission in the ConnectX Kaggle competition.
+Two player fully-observable games (e.g. tic-tac-toe, connect4, backgammon, chess) are learnable. In this project I want to explore a range of algorithms and compare them. Ultimately, I want to have a high ranking submission in the ConnectX Kaggle competition.
 
 Algorithms to try:
 - Non-deep:

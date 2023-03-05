@@ -28,14 +28,15 @@ class ConnectX(gym.Env):
         # Define required gym fields (examples):
         config = self.env.configuration
         self.action_space = spaces.Discrete(config.columns)
-        self.observation_space = spaces.Box(low=0, high=2,
-                                            shape=(1, config.rows, config.columns),
-                                            dtype=int)
+        self.observation_space = spaces.Dict({'remainingOverageTime': spaces.Discrete(60 + 1),
+                                              'step': spaces.Discrete(config.rows * config.columns + 1),
+                                              'board': spaces.Box(low=0, high=2, shape=(1, config.rows * config.columns), dtype=int),
+                                              'mark': spaces.Discrete(2 + 1)})
         self.reward_range = (-10, 1)
 
     def step(self, action):
         # Check validity of action
-        is_valid = (self.obs['board'][int(action)] == 0)
+        is_valid = (self.obs['board'][int(action)] == 0) and self.action_space.contains(int(action))
         if is_valid:  # Play the move
             self.obs, old_reward, done, info = self.trainer.step(int(action))
             reward = self._custom_reward(old_reward, done)
@@ -61,6 +62,6 @@ class ConnectX(gym.Env):
             return 1 / (config.rows * config.columns)
 
     def _switch_trainer(self):
-        if np.random.random() < self.switch_prob:
+        if np.random.random() < self.switching_prob:
             self.pair = self.pair[::-1]  # reverse list order
             self.trainer = self.env.train(self.pair)
