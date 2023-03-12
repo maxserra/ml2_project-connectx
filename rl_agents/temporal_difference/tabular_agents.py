@@ -77,6 +77,8 @@ class QLearning(OffPolicyAlgorithm):
         # # Update learning rate according to schedule
         # self._update_learning_rate(self.policy.optimizer)
 
+        self.policy: TabularQFunction
+
         # losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer
@@ -85,7 +87,7 @@ class QLearning(OffPolicyAlgorithm):
             q_old = self.policy.get_q_value(state=replay_data.observations, action=replay_data.actions)
 
             if not replay_data.dones:
-                new_optimal_action = self.policy.get_optimal_action(observation=replay_data.next_observations)
+                new_optimal_action = self.policy.get_optimal_action(state=replay_data.next_observations)
                 q_new = self.policy.get_q_value(state=replay_data.next_observations, action=new_optimal_action)
             else:
                 q_new = 0

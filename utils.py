@@ -1,6 +1,7 @@
 import os
 import lzma
 import pickle
+from typing import Dict, List
 import numpy as np
 
 
@@ -67,3 +68,15 @@ def dump_pretrained_agent(agent,
         pickle.dump(agent, file)
 
     return True
+
+
+def custom_feature_extractor(observation: Dict, trained_on: int) -> str:
+    if observation is None:
+        return None
+    if isinstance(observation, List):
+        return [custom_feature_extractor(obs, trained_on) for obs in observation]
+
+    state = flip_state_marks(state=str(observation["board"].flatten().tolist()),
+                             mark=int(observation["mark"].flatten().tolist()[0]),
+                             agent_trained_on_mark=trained_on)
+    return state

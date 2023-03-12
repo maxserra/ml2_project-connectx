@@ -9,13 +9,6 @@ from stable_baselines3.common.type_aliases import Schedule
 import utils
 
 
-def custom_feature_extractor(observation: Dict) -> str:
-    state = utils.flip_state_marks(state=str(observation["board"].flatten().tolist()),
-                                   mark=int(observation["mark"].flatten().tolist()[0]),
-                                   agent_trained_on_mark=1)
-    return state
-
-
 class TabularQFunction(BasePolicy):
 
     def __init__(
@@ -28,7 +21,7 @@ class TabularQFunction(BasePolicy):
         super().__init__(
             observation_space,
             action_space,
-            features_extractor=custom_feature_extractor
+            features_extractor=utils.custom_feature_extractor
         )
 
         self.q_values: Dict[str, Dict[str, float]] = {} if q_values is None else q_values
@@ -37,7 +30,7 @@ class TabularQFunction(BasePolicy):
     def get_q_value(self, state: str, action: str) -> float:
         '''Return stored q value for (state, action) pair or a random number if unknown.'''
         if isinstance(state, dict):
-            state = self.features_extractor(state)
+            state = self.features_extractor(state, self.trained_on_mark)
         if not isinstance(action, (str, int)):
             action = action.flatten().tolist()[0]
         if state not in self.q_values.keys():
@@ -49,7 +42,7 @@ class TabularQFunction(BasePolicy):
 
     def get_state_expected_q_value(self, state: str) -> float:
         if isinstance(state, dict):
-            state = self.features_extractor(state)
+            state = self.features_extractor(state, self.trained_on_mark)
         if state not in self.q_values.keys():
             return np.random.random()
         state_q_values = np.array(list(self.q_values[state].values()))
@@ -58,7 +51,7 @@ class TabularQFunction(BasePolicy):
     def set_q_value(self, state: str, action: str, value: float):
         '''Store q value for (state, action) pair.'''
         if isinstance(state, dict):
-            state = self.features_extractor(state)
+            state = self.features_extractor(state, self.trained_on_mark)
         if not isinstance(action, (str, int)):
             action = action.flatten().tolist()[0]
         if not isinstance(value, float):
@@ -72,7 +65,7 @@ class TabularQFunction(BasePolicy):
 
     def get_optimal_action(self, state: str):
         if isinstance(state, dict):
-            state = self.features_extractor(state)
+            state = self.features_extractor(state, self.trained_on_mark)
         '''Return the action with highest q value for given state and action list.'''
         if state not in self.q_values.keys():
             return self.action_space.sample()
@@ -89,7 +82,7 @@ class TabularQFunction(BasePolicy):
         return max_action
 
     def forward(self, observation, deterministic: bool = True):
-        return self._predict(self.features_extractor(observation),
+        return self._predict(self.features_extractor(observation, self.trained_on_mark),
                              deterministic=deterministic)
 
     def _predict(self, observation, deterministic: bool = True):
@@ -102,7 +95,8 @@ class TabularQFunction(BasePolicy):
         episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
     ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
-        action = self._predict(self.features_extractor(observation))
+        # action = self._predict(self.features_extractor(observation, self.trained_on_mark))
+        action = self._predict(str(observation))
         action = np.array([action]).reshape((-1,) + self.action_space.shape)
         return action, state
 
