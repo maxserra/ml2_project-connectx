@@ -1,3 +1,4 @@
+from typing import List, Any
 import numpy as np
 import gym
 from gym import spaces
@@ -7,13 +8,14 @@ from kaggle_environments import make
 class TicTacToe(gym.Env):
 
     def __init__(self,
-                 opponent: str = "reaction",
+                 opponents: List[Any] = ["reaction"],
                  switching_prob: float = 0.5,
                  debug: bool = False) -> None:
 
         # Define custom fields
         self.kaggle_env = make("tictactoe", debug=debug)
-        self.pair = [None, opponent]
+        self.opponents = opponents
+        self.pair = self._make_new_pair()
         self.trainer = self.kaggle_env.train(self.pair)
         self.switching_prob = switching_prob
 
@@ -26,6 +28,9 @@ class TicTacToe(gym.Env):
         self.reward_range = (-10, 1)
 
     def step(self, action):
+        # Make sure the env is reseted
+        if self.kaggle_env.done:
+            self.reset()
         # Check validity of action
         is_valid = (self.obs['board'][int(action)] == 0) and self.action_space.contains(int(action))
         if is_valid:  # Play the move
@@ -104,7 +109,14 @@ class TicTacToe(gym.Env):
 
         return all(state)
 
+    def _make_new_pair(self):
+        return [None, np.random.choice(self.opponents)]
+
     def _switch_trainer(self):
+        # Change opponent
+        if np.random.random() < self.switching_prob:
+            self.pair = self._make_new_pair()
+        # Reverse roles
         if np.random.random() < self.switching_prob:
             self.pair = self.pair[::-1]  # reverse list order
-            self.trainer = self.kaggle_env.train(self.pair)
+        self.trainer = self.kaggle_env.train(self.pair)
