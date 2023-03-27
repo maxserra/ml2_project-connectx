@@ -420,6 +420,7 @@ class ExpectedSarsa(QLearning):
         self.logger.record("train/n_updates", self._n_updates)
         self.logger.record("train/q_value_gradient", safe_mean(q_value_gradients))
 
+## Unused since the move to stable-baselines
 
 # class TabularQLearningAgent(TabularQFunctionAgentBase):
 
