@@ -1,3 +1,5 @@
+import sys
+import time
 from typing import Any, Dict, Optional, Tuple, Type, Union
 
 import numpy as np
@@ -7,7 +9,7 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule, ReplayBufferSamples
-from stable_baselines3.common.utils import is_vectorized_observation
+from stable_baselines3.common.utils import is_vectorized_observation, get_linear_fn, safe_mean
 
 from rl_agents.temporal_difference.policies import TabularQFunction
 
@@ -30,9 +32,9 @@ class QLearning(OffPolicyAlgorithm):
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
-        exploration_fraction: float = 0.1,
+        exploration_fraction: float = 0.25,
         exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.1,
+        exploration_final_eps: float = 0.005,
         max_grad_norm: float = 10,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[Dict[str, Any]] = None,
@@ -66,67 +68,61 @@ class QLearning(OffPolicyAlgorithm):
             support_multi_env=True,
         )
 
-        self.exploration_rate = exploration_final_eps
+        self.exploration_rate = 0.0
+        self.exploration_schedule = get_linear_fn(
+            exploration_initial_eps,
+            exploration_final_eps,
+            exploration_fraction,
+        )
 
         if _init_setup_model:
             super()._setup_model()
 
-    def train(self, gradient_steps: int, batch_size: int = 1) -> None:
-        # # Switch to train mode (this affects batch norm / dropout)
-        # self.policy.set_training_mode(True)
-        # # Update learning rate according to schedule
-        # self._update_learning_rate(self.policy.optimizer)
-
         self.policy: TabularQFunction
 
-        # losses = []
+    def _on_step(self) -> None:
+        """
+        Update the exploration rate.
+        This method is called in ``collect_rollouts()`` after each step in the environment.
+        """
+        self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
+        self.logger.record("rollout/exploration_rate", self.exploration_rate)
+
+        # Required due to how collect_rollouts works
+        if self.env.envs[0].env.kaggle_env.done:
+            self.env.envs[0].env.reset()
+
+    def train(self, gradient_steps: int, batch_size: int = 1) -> None:
+
+        q_value_gradients = []
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data: ReplayBufferSamples = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
-            q_old = self.policy.get_q_value(state=replay_data.observations, action=replay_data.actions)
+            state: str = str(replay_data.observations["board"].flatten().int().tolist())
+            mark: int = replay_data.observations["mark"].flatten().int().tolist()[0]
+            action: int = replay_data.actions.flatten().int().tolist()[0]
+            next_state: str = str(replay_data.next_observations["board"].flatten().int().tolist())
+            reward: float = replay_data.rewards.flatten().tolist()[0]
+
+            q_old = self.policy.get_q_value(state=state, action=action)
 
             if not replay_data.dones:
-                new_optimal_action = self.policy.get_optimal_action(state=replay_data.next_observations)
-                q_new = self.policy.get_q_value(state=replay_data.next_observations, action=new_optimal_action)
+                next_state_optimal_action = self.policy.get_optimal_action(state=next_state, player_mark=mark)
+                q_next_state = self.policy.get_q_value(state=next_state, action=next_state_optimal_action)
             else:
-                q_new = 0
+                q_next_state = 0
 
-            q_new = q_old + self.learning_rate * (replay_data.rewards + self.gamma * q_new - q_old)
-            self.policy.set_q_value(state=replay_data.observations, action=replay_data.actions, value=q_new)
+            q_new = q_old + self.learning_rate * reward + self.gamma * q_next_state - q_old
+            self.policy.set_q_value(state=state, action=action, value=q_new)
 
-            # with th.no_grad():
-            #     # Compute the next Q-values using the target network
-            #     next_q_values = self.q_net_target(replay_data.next_observations)
-            #     # Follow greedy policy: use the one with the highest value
-            #     next_q_values, _ = next_q_values.max(dim=1)
-            #     # Avoid potential broadcast issue
-            #     next_q_values = next_q_values.reshape(-1, 1)
-            #     # 1-step TD target
-            #     target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-
-            # # Get current Q-values estimates
-            # current_q_values = self.q_net(replay_data.observations)
-
-            # # Retrieve the q-values for the actions from the replay buffer
-            # current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
-
-            # # Compute Huber loss (less sensitive to outliers)
-            # loss = F.smooth_l1_loss(current_q_values, target_q_values)
-            # losses.append(loss.item())
-
-            # # Optimize the policy
-            # self.policy.optimizer.zero_grad()
-            # loss.backward()
-            # # Clip gradient norm
-            # th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            # self.policy.optimizer.step()
+            q_value_gradients.append(abs(q_new - q_old))
 
         # Increase update counter
         self._n_updates += gradient_steps
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        # self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/n_updates", self._n_updates)
+        self.logger.record("train/q_value_gradient", safe_mean(q_value_gradients))
 
     def predict(
         self,
@@ -163,19 +159,89 @@ class QLearning(OffPolicyAlgorithm):
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
+        selfplay_start: int = None,
         tb_log_name: str = "QLearning",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
 
-        return super().learn(
-            total_timesteps=total_timesteps,
-            callback=callback,
-            log_interval=log_interval,
-            tb_log_name=tb_log_name,
-            reset_num_timesteps=reset_num_timesteps,
-            progress_bar=progress_bar,
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
         )
+
+        callback.on_training_start(locals(), globals())
+
+        while self.num_timesteps < total_timesteps:
+            rollout = self.collect_rollouts(
+                self.env,
+                train_freq=self.train_freq,
+                action_noise=self.action_noise,
+                callback=callback,
+                learning_starts=self.learning_starts,
+                replay_buffer=self.replay_buffer,
+                log_interval=log_interval,
+            )
+
+            if rollout.continue_training is False:
+                break
+
+            # Enable selfplay by adding oneself to the opponents list
+            if selfplay_start is not None and self._episode_num > selfplay_start:
+                if hasattr(self.env.envs[0].env, "opponents"):
+                    if self.kaggle_step_function not in self.env.envs[0].env.opponents:
+                        print("adding selfplay")
+                        self.env.envs[0].env.opponents.append(self.kaggle_step_function)
+                else:
+                    raise ValueError("For this selfplay approach to work, env should have an attribute 'opponents'.")
+
+            if self.num_timesteps > 0 and self.num_timesteps > self.learning_starts:
+                # If no `gradient_steps` is specified,
+                # do as many gradients steps as steps performed during the rollout
+                gradient_steps = self.gradient_steps if self.gradient_steps >= 0 else rollout.episode_timesteps
+                # Special case when the user passes `gradient_steps=0`
+                if gradient_steps > 0:
+                    self.train(batch_size=self.batch_size, gradient_steps=gradient_steps)
+
+        callback.on_training_end()
+
+        return self
+
+    def _dump_logs(self) -> None:
+        """
+        Write log.
+        """
+        time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+        fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+        self.logger.record("time/iterations", self._episode_num)
+        if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+            self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+            self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+        self.logger.record("time/fps", fps)
+        self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+        self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+        if self.use_sde:
+            self.logger.record("train/std", (self.actor.get_std()).mean().item())
+
+        if len(self.ep_success_buffer) > 0:
+            self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
+        # Pass the number of timesteps for tensorboard
+        self.logger.dump(step=self.num_timesteps)
+
+    def kaggle_step_function(self, observation, configuration):
+
+        print("playing against self!")
+
+        state = str(observation["board"])
+        mark = observation["mark"]
+
+        optimal_action = self.policy.get_optimal_action(state=state, player_mark=mark)
+        print(optimal_action)
+
+        return optimal_action
 
 
 class Sarsa(QLearning):
@@ -196,9 +262,9 @@ class Sarsa(QLearning):
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
-        exploration_fraction: float = 0.1,
+        exploration_fraction: float = 0.50,
         exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.1,
+        exploration_final_eps: float = 0.005,
         max_grad_norm: float = 10,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[Dict[str, Any]] = None,
@@ -235,32 +301,36 @@ class Sarsa(QLearning):
         )
 
     def train(self, gradient_steps: int, batch_size: int = 1) -> None:
-        # # Switch to train mode (this affects batch norm / dropout)
-        # self.policy.set_training_mode(True)
-        # # Update learning rate according to schedule
-        # self._update_learning_rate(self.policy.optimizer)
 
-        # losses = []
+        q_value_gradients = []
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data: ReplayBufferSamples = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
-            q_old = self.policy.get_q_value(state=replay_data.observations, action=replay_data.actions)
+            state: str = str(replay_data.observations["board"].flatten().int().tolist())
+            mark: int = replay_data.observations["mark"].flatten().int().tolist()[0]
+            action: int = replay_data.actions.flatten().int().tolist()[0]
+            next_state: str = str(replay_data.next_observations["board"].flatten().int().tolist())
+            reward: float = replay_data.rewards.flatten().tolist()[0]
+
+            q_old = self.policy.get_q_value(state=state, action=action)
 
             if not replay_data.dones:
-                new_action = self.predict(observation=replay_data.next_observations)
-                q_new = self.policy.get_q_value(state=replay_data.next_observations, action=new_action)
+                next_state_action = self.predict(observation=replay_data.next_observations)
+                q_next_state = self.policy.get_q_value(state=next_state, action=next_state_action)
             else:
-                q_new = 0
+                q_next_state = 0
 
-            q_new = q_old + self.learning_rate * (replay_data.rewards + self.gamma * q_new - q_old)
-            self.policy.set_q_value(state=replay_data.observations, action=replay_data.actions, value=q_new)
+            q_new = q_old + self.learning_rate * reward + self.gamma * q_next_state - q_old
+            self.policy.set_q_value(state=state, action=action, value=q_new)
+
+            q_value_gradients.append(abs(q_new - q_old))
 
         # Increase update counter
         self._n_updates += gradient_steps
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        # self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/n_updates", self._n_updates)
+        self.logger.record("train/q_value_gradient", safe_mean(q_value_gradients))
 
 
 class ExpectedSarsa(QLearning):
@@ -281,9 +351,9 @@ class ExpectedSarsa(QLearning):
         replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
-        exploration_fraction: float = 0.1,
+        exploration_fraction: float = 0.50,
         exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.1,
+        exploration_final_eps: float = 0.005,
         max_grad_norm: float = 10,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[Dict[str, Any]] = None,
@@ -320,32 +390,35 @@ class ExpectedSarsa(QLearning):
         )
 
     def train(self, gradient_steps: int, batch_size: int = 1) -> None:
-        # # Switch to train mode (this affects batch norm / dropout)
-        # self.policy.set_training_mode(True)
-        # # Update learning rate according to schedule
-        # self._update_learning_rate(self.policy.optimizer)
 
-        # losses = []
+        q_value_gradients = []
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data: ReplayBufferSamples = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
-            q_old = self.policy.get_q_value(state=replay_data.observations, action=replay_data.actions)
+            state: str = str(replay_data.observations["board"].flatten().int().tolist())
+            mark: int = replay_data.observations["mark"].flatten().int().tolist()[0]
+            action: int = replay_data.actions.flatten().int().tolist()[0]
+            next_state: str = str(replay_data.next_observations["board"].flatten().int().tolist())
+            reward: float = replay_data.rewards.flatten().tolist()[0]
+
+            q_old = self.policy.get_q_value(state=state, action=action)
 
             if not replay_data.dones:
-                new_action = self.policy.get_state_expected_value(observation=replay_data.next_observations)
-                q_new = self.policy.get_q_value(state=replay_data.next_observations, action=new_action)
+                q_next_state = self.policy.get_state_expected_q_value(state=next_state)
             else:
-                q_new = 0
+                q_next_state = 0
 
-            q_new = q_old + self.learning_rate * (replay_data.rewards + self.gamma * q_new - q_old)
-            self.policy.set_q_value(state=replay_data.observations, action=replay_data.actions, value=q_new)
+            q_new = q_old + self.learning_rate * reward + self.gamma * q_next_state - q_old
+            self.policy.set_q_value(state=state, action=action, value=q_new)
+
+            q_value_gradients.append(abs(q_new - q_old))
 
         # Increase update counter
         self._n_updates += gradient_steps
 
-        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        # self.logger.record("train/loss", np.mean(losses))
+        self.logger.record("train/n_updates", self._n_updates)
+        self.logger.record("train/q_value_gradient", safe_mean(q_value_gradients))
 
 
 # class TabularQLearningAgent(TabularQFunctionAgentBase):

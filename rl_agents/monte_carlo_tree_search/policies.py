@@ -18,6 +18,7 @@ class MCTSPolicy(BasePolicy):
         observation_space: spaces.Space,
         action_space: spaces.Discrete,
         lr_schedule: Schedule,
+        action_selection_strategy: str = "uct",
         use_sde: bool = False,
     ):
         super().__init__(
@@ -25,6 +26,16 @@ class MCTSPolicy(BasePolicy):
             action_space,
             features_extractor=utils.custom_feature_extractor
         )
+
+        action_selection_strategies = {
+            "uct": self._compute_uct_values,
+            "adaptive_uct": self._compute_adaptive_uct_values,
+        }
+
+        try:
+            self.action_selection_function = action_selection_strategies[action_selection_strategy]
+        except KeyError:
+            raise ValueError(f"action_selection_strategy must be one of {action_selection_strategies.keys()}")
 
         self.trained_on_mark = 1  # default to 1
 
@@ -36,8 +47,8 @@ class MCTSPolicy(BasePolicy):
             return self.action_space.sample(), 0.0, 1.0
 
         state_node: TreeNode = self.tree.get(state=state, mark=self.trained_on_mark)
-        values = self._compute_uct_values(state_node.action_values,
-                                          state_node.selection_count)
+        values = self.action_selection_function(state_node.action_values,
+                                                state_node.selection_count)
         if player_mark == self.trained_on_mark:
             action = max(values.keys(), key=lambda key: values[key])
             value = values[action]
@@ -88,25 +99,10 @@ class MCTSPolicy(BasePolicy):
     def forward(
         self,
         observation,
-        # prev_observation=None,
-        # prev_action=None,
-        # add_if_missing: bool = True,
         deterministic: bool = True
     ):
-        # # print(observation, prev_observation, prev_action)
-        # state = self.features_extractor(observation, self.trained_on_mark)
-        # # Check if state already exists in the tree
-        # if add_if_missing and not self.tree.contains(state, mark=self.trained_on_mark):
-        #     prev_state = self.features_extractor(prev_observation, self.trained_on_mark)
-        #     prev_action = prev_action.flatten().tolist()[0]
-        #     self.tree.new_node(state=state,
-        #                        prev_state=prev_state,
-        #                        prev_action=prev_action,
-        #                        mark=self.trained_on_mark)
-
         return self._predict(observation={"state": str(observation["board"].flatten().tolist()),
                                           "mark": int(observation["mark"].flatten().tolist()[0])},
-                             #  self.features_extractor(observation, self.trained_on_mark),
                              deterministic=deterministic)
 
     def _predict(self, observation, deterministic: bool = True):
@@ -128,7 +124,6 @@ class MCTSPolicy(BasePolicy):
     ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
         action = self._predict(observation={"state": str(observation["board"].flatten().tolist()),
                                             "mark": int(observation["mark"].flatten().tolist()[0])},
-                               #    self.features_extractor(observation, self.trained_on_mark),
                                deterministic=deterministic)
         action = np.array([action]).reshape((-1,) + self.action_space.shape)
         return action, state

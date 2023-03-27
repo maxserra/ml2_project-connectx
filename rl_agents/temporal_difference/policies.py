@@ -14,14 +14,13 @@ class TabularQFunction(BasePolicy):
     def __init__(
         self,
         observation_space: spaces.Space,
-        action_space: spaces.Space,
+        action_space: spaces.Discrete,
         lr_schedule: Schedule,
         q_values: Dict[str, Dict[str, float]] = None,
     ):
         super().__init__(
             observation_space,
-            action_space,
-            features_extractor=utils.custom_feature_extractor
+            action_space
         )
 
         self.q_values: Dict[str, Dict[str, float]] = {} if q_values is None else q_values
@@ -41,8 +40,6 @@ class TabularQFunction(BasePolicy):
         return self.q_values[state][action]
 
     def get_state_expected_q_value(self, state: str) -> float:
-        if isinstance(state, dict):
-            state = self.features_extractor(state, self.trained_on_mark)
         if state not in self.q_values.keys():
             return np.random.random()
         state_q_values = np.array(list(self.q_values[state].values()))
@@ -63,30 +60,37 @@ class TabularQFunction(BasePolicy):
         # store value
         self.q_values[state][action] = value
 
-    def get_optimal_action(self, state: str):
-        if isinstance(state, dict):
-            state = self.features_extractor(state, self.trained_on_mark)
+    def get_optimal_action(self, state: str, player_mark: int):
         '''Return the action with highest q value for given state and action list.'''
         if state not in self.q_values.keys():
             return self.action_space.sample()
 
-        max_action = self.action_space.sample()
-        max_value = self.get_q_value(state=state, action=max_action)
+        optimal_action = self.action_space.sample()
+        optimal_value = self.get_q_value(state=state, action=optimal_action)
         for action in self.q_values[state].keys():
             value = self.get_q_value(state=state, action=action)
-            if value > max_value:
-                max_value = value
-                max_action = action
-            elif value == max_value:
-                max_action = np.random.choice([max_action, action])
-        return max_action
+            if player_mark == self.trained_on_mark:
+                if value > optimal_value:
+                    optimal_value = value
+                    optimal_action = action
+                elif value == optimal_value:
+                    optimal_action = np.random.choice([optimal_action, action])
+            else:
+                if value < optimal_value:
+                    optimal_value = value
+                    optimal_action = action
+                elif value == optimal_value:
+                    optimal_action = np.random.choice([optimal_action, action])
+        return optimal_action
 
     def forward(self, observation, deterministic: bool = True):
-        return self._predict(self.features_extractor(observation, self.trained_on_mark),
+        return self._predict(observation={"state": str(observation["board"].flatten().tolist()),
+                                          "mark": int(observation["mark"].flatten().tolist()[0])},
                              deterministic=deterministic)
 
     def _predict(self, observation, deterministic: bool = True):
-        return self.get_optimal_action(state=observation)
+        return self.get_optimal_action(state=observation["state"],
+                                       player_mark=observation["mark"])
 
     def predict(
         self,
@@ -95,8 +99,9 @@ class TabularQFunction(BasePolicy):
         episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
     ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
-        # action = self._predict(self.features_extractor(observation, self.trained_on_mark))
-        action = self._predict(str(observation))
+        action = self._predict(observation={"state": str(observation["board"].flatten().tolist()),
+                                            "mark": int(observation["mark"].flatten().tolist()[0])},
+                               deterministic=deterministic)
         action = np.array([action]).reshape((-1,) + self.action_space.shape)
         return action, state
 

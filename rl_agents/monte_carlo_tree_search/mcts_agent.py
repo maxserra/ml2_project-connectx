@@ -1,4 +1,9 @@
-from typing import Any, Dict, Optional, Tuple, Type, Union
+import sys
+import os
+import time
+import lzma
+import pickle
+from typing import Any, Dict, Optional, Type, Union
 import warnings
 
 import numpy as np
@@ -8,12 +13,10 @@ from gym import spaces
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule, RolloutBufferSamples, DictRolloutBufferSamples
-from stable_baselines3.common.utils import obs_as_tensor, is_vectorized_observation
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
 
-import utils
 
 from rl_agents.monte_carlo_tree_search.policies import MCTSPolicy
 
@@ -193,7 +196,10 @@ class MCTS(OnPolicyAlgorithm):
         # # Update optimizer learning rate
         # self._update_learning_rate(self.policy.optimizer)
 
-        self.policy: MCTSPolicy  # For helping putposes...
+        self.policy: MCTSPolicy  # For helping purposes...
+
+        # Logs
+        value_gradients = []
 
         # This will get all the data in the rollout_buffer one at a time in reversed order
         rollout_sample: Union[RolloutBufferSamples, DictRolloutBufferSamples]
@@ -206,8 +212,12 @@ class MCTS(OnPolicyAlgorithm):
             action: int = rollout_sample.actions.flatten().int().tolist()[0]
             reward: float = rollout_sample.returns.flatten().tolist()[0]
 
+            # Logs
+            state_node = self.policy.tree.get(state=state, mark=mark)
+            value_before_update = state_node.value if state_node is not None else 0
+
             from environments.tictactoe import TicTacToe
-            self.original_env_class: TicTacToe  # For helping putposes...
+            self.original_env_class: TicTacToe  # For helping purposes...
 
             if i == 0:
                 # The last entry in the buffer must have led to a terminal state. Notice the reversed order!
@@ -300,42 +310,111 @@ class MCTS(OnPolicyAlgorithm):
             state_node.visits += 1
             state_node.value = np.array(list(state_node.action_values.values())).mean()
 
+            # Logs
+            value_gradients.append(abs(state_node.value - value_before_update))
+
             # Store state as next_state for next iteration
             next_state = state
-
-        # explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
         self._n_updates += 1
 
         # Logs
-        self.logger.record("train/n_updates", self._n_updates)#, exclude="tensorboard")
-        # self.logger.record("train/explained_variance", explained_var)
-        # self.logger.record("train/entropy_loss", entropy_loss.item())
-        # self.logger.record("train/policy_loss", policy_loss.item())
-        # self.logger.record("train/value_loss", value_loss.item())
-        # if hasattr(self.policy, "log_std"):
-        #     self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+        self.logger.record("train/n_updates", self._n_updates)
+        self.logger.record("train/visited_states", len(self.policy.tree.nodes_in_tree))
+        self.logger.record("train/value_gradient", safe_mean(value_gradients))
 
     def learn(
         self,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 1,
+        selfplay_start: int = None,
         tb_log_name: str = "MCTS",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
+        iteration = 0
 
-        return super().learn(
-            total_timesteps=total_timesteps,
-            callback=callback,
-            log_interval=log_interval,
-            tb_log_name=tb_log_name,
-            reset_num_timesteps=reset_num_timesteps,
-            progress_bar=progress_bar,
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            callback,
+            reset_num_timesteps,
+            tb_log_name,
+            progress_bar,
         )
 
+        callback.on_training_start(locals(), globals())
+
+        while self.num_timesteps < total_timesteps:
+
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+
+            if continue_training is False:
+                break
+
+            iteration += 1
+            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+            # Enable selfplay by adding oneself to the opponents list
+            if selfplay_start is not None and iteration > selfplay_start:
+                if hasattr(self.env.envs[0].env, "opponents"):
+                    if self.kaggle_step_function not in self.env.envs[0].env.opponents:
+                        print("adding selfplay")
+                        self.env.envs[0].env.opponents.append(self.kaggle_step_function)
+                else:
+                    raise ValueError("For this selfplay approach to work, env should have an attribute 'opponents'.")
+
+            # Display training infos
+            if log_interval is not None and iteration % log_interval == 0:
+                time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
+                fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
+                self.logger.record("time/iterations", iteration)
+                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                    self.logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    self.logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                self.logger.record("time/fps", fps)
+                self.logger.record("time/time_elapsed", int(time_elapsed), exclude="tensorboard")
+                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                self.logger.dump(step=self.num_timesteps)
+
+            self.train()
+
+        callback.on_training_end()
+
+        return self
+
+    def save(
+        self,
+        path: str,
+    ) -> None:
+        """
+        Save all the attributes of the object and the model parameters in a zip-file.
+
+        :param path: path to the file where the rl agent should be saved
+        """
+        with lzma.open(path, "wb") as file:
+            pickle.dump(self.policy, file)
+
+    @classmethod  # noqa: C901
+    def load(
+        cls,
+        path: str,
+    ):
+        """
+        Load the model from a file.
+        """
+        if os.path.exists(path):
+            print(f"Loading pretrained agent from '{path}'...")
+            with lzma.open(path, "rb") as file:
+                agent = pickle.load(file)
+        else:
+            raise ValueError(f"Given pretrained agent path '{path}' not found.")
+
+        return agent
+
     def kaggle_step_function(self, observation, configuration):
+
+        print("playing against self!")
 
         state = str(observation["board"])
         mark = observation["mark"]

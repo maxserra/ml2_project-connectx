@@ -1,125 +1,131 @@
-import os
-import pickle
-import numpy as np
-from tqdm.autonotebook import tqdm
+import argparse
+from pprint import pprint
+from typing import Optional
 
-from kaggle_environments import Environment
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv
 
-from rl_agents.temporal_difference.tabular_agents import TabularQLearningAgent, TabularSarsaAgent, TabularExpectedSarsaAgent
-from rl_agents.base_agents import TabularQFunctionAgentBase
-from utils import get_possible_actions, convert_action_to_connectx_action, flip_state_marks, generate_agent_file_name
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
-
-def train_q_learning_agent(env: Environment,
-                           starting_agent_path: str = None,
-                           resulting_agent_path: str = None,
-                           nr_episodes: int = 100, nr_steps: int = 100,
-                           epsilon: float = 0.1, learning_rate: float = 0.9, gamma: float = 1):
-
-    n_cols = env.configuration["columns"]
-
-    # instanciate or load agent
-    if starting_agent_path is None:
-        agent = TabularQLearningAgent(actions=get_possible_actions(n_cols=n_cols),
-                                      gamma=gamma, learning_rate=learning_rate, epsilon=epsilon)
-    else:
-        if os.path.exists(starting_agent_path):
-            print(f"Loading pretrained agent from '{starting_agent_path}'...")
-            with open(starting_agent_path, "rb") as file:
-                agent = pickle.load(file)
-        else:
-            ValueError(f"Given pretrained agent path '{starting_agent_path}' not found.")
-
-    for _ in tqdm(range(nr_episodes)):
-
-        rival = np.random.choice(["random", "negamax"], size=1)[0]
-        trainer = env.train([None, rival])
-
-        observation = trainer.reset()
-
-        for _ in range(nr_steps):
-
-            board = observation["board"]
-
-            state = str(board)
-            actions = get_possible_actions(n_cols=n_cols, board=board)
-
-            action = agent.get_epsilon_greedy_action(state=state, actions=actions)
-
-            observation, reward, done, info = trainer.step(convert_action_to_connectx_action(action))
-
-            if reward is None:
-                reward = -10
-                print(done)
-
-            next_state = str(observation["board"])
-
-            agent.update_q_value(old_state=state, action=action, new_state=next_state, reward=reward)
-
-            if done:
-                # print(f"Final state reached: \n  - {next_state}\n  - reward {reward}\n  - info {info}\n------")
-                break  # final state reached
-
-    if resulting_agent_path is None and starting_agent_path is None:
-        print("No agent path provided. Trained agent won't be stored.")
-        return agent
-    elif resulting_agent_path is None and starting_agent_path is not None:
-        resulting_agent_path = starting_agent_path
-
-    print(f"Storing resulting trained agent to file '{resulting_agent_path}'...")
-    with open(resulting_agent_path, 'wb') as file:
-        pickle.dump(agent, file)
-
-    return agent
+from rl_agents.monte_carlo_tree_search.mcts_agent import MCTS, MCTSPolicy
+from rl_agents.temporal_difference.tabular_agents import QLearning, Sarsa, ExpectedSarsa, TabularQFunction
+from environments.tictactoe import TicTacToe
 
 
-def train_agent(agent: TabularQFunctionAgentBase,
-                env: Environment,
-                n_episodes: int = 200,
-                n_max_steps: int = 100,
-                pretrained_agents_path: str = "pretrained_agents"):
+def main_MCTS(project_name, config):
 
-    for _ in tqdm(range(n_episodes), desc=f"Training '{type(agent).__name__}' agent in '{env.name}' environment..."):
+    run = wandb.init(
+        project=project_name,
+        config=config,
+        sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+        monitor_gym=False,  # auto-upload the videos of agents playing the game
+        save_code=False,  # optional
+    )
 
-        rival = np.random.choice(["random", "negamax"], size=1)[0]
-        if np.random.random() < 0.5:
-            agents = [None, rival]
-        else:
-            agents = [rival, None]
-        trainer = env.train(agents=agents)
+    def make_env():
+        env = TicTacToe(opponents=config["env_config"]["opponents"],
+                        switching_prob=config["env_config"]["switching_prob"])
+        env = Monitor(env)  # record stats such as returns
+        return env
 
-        observation = trainer.reset()
-        mark = observation["mark"]  # mark doesn't change during the whole game
+    env = DummyVecEnv([make_env])
 
-        for _ in range(n_max_steps):
+    mcts_agent = MCTS(policy=MCTSPolicy,
+                      env=env,
+                      max_episode_steps=10,
+                      verbose=1,
+                      tensorboard_log=f"logs/{config['algorithm']}_tictactoe"
+                      )
 
-            board = observation["board"]
-            possible_actions = get_possible_actions(n_cols=env.configuration["columns"], board=board)
-            state = str(board)
+    mcts_agent.learn(total_timesteps=config["total_timesteps"],
+                     log_interval=config["log_interval"],
+                     selfplay_start=config["selfplay_start"],
+                     reset_num_timesteps=False,
+                     callback=WandbCallback(log="all",
+                                            model_save_path=f"pretrained_agents/{run.name}",
+                                            )
+                     )
 
-            if mark != agent.trained_on_mark:
-                state = flip_state_marks(state=state, mark=mark, agent_trained_on_mark=agent.trained_on_mark)
 
-            action = agent.get_epsilon_greedy_action(state=state, actions=possible_actions)
+def main_QLearning(project_name, config):
 
-            observation, reward, done, info = trainer.step(convert_action_to_connectx_action(action))
+    run = wandb.init(
+        project=project_name,
+        config=config,
+        sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+        monitor_gym=False,  # auto-upload the videos of agents playing the game
+        save_code=False,  # optional
+    )
 
-            if reward is None:
-                reward = -10
-                print(done)
+    def make_env():
+        env = TicTacToe(opponents=config["env_config"]["opponents"],
+                        switching_prob=config["env_config"]["switching_prob"])
+        env = Monitor(env)  # record stats such as returns
+        return env
 
-            next_state = str(observation["board"])
+    env = DummyVecEnv([make_env])
 
-            if mark != agent.trained_on_mark:
-                next_state = flip_state_marks(state=next_state, mark=mark, agent_trained_on_mark=agent.trained_on_mark)
+    agent = eval(config["algorithm"])(policy=TabularQFunction,
+                                      env=env,
+                                      learning_starts=0,
+                                      verbose=1,
+                                      tensorboard_log=f"logs/{config['algorithm']}_tictactoe"
+                                      )
 
-            agent.update_q_value(old_state=state, action=action, new_state=next_state, reward=reward, new_state_is_terminal=done)
+    agent.learn(total_timesteps=config["total_timesteps"],
+                log_interval=config["log_interval"],
+                selfplay_start=config["selfplay_start"],
+                reset_num_timesteps=False,
+                callback=WandbCallback(log="all",
+                                       model_save_path=f"pretrained_agents/{run.name}",
+                                       )
+                )
 
-            # print(f"curr_state:    {state}\n" +
-            #       f"mark:          {mark}\n" +
-            #       f"action:        {action}\n" +
-            #       f"next_state:    {next_state}")
 
-            if done:
-                # print(f"Final state reached: \n  - {next_state}\n  - reward {reward}\n  - info {info}\n------")
-                break  # final state reached
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("project_name")
+    parser.add_argument("-algo", required=True)
+    parser.add_argument("-policy", required=True)
+    parser.add_argument("-env", required=True)
+    parser.add_argument("-env_opponents", nargs="+", required=True)
+    parser.add_argument("-env_switching", required=True, type=float)
+    parser.add_argument("-timesteps", required=True, type=int)
+    parser.add_argument("-log_inter", required=True, type=int)
+    parser.add_argument("-selfplay", required=False, type=int, default=None)
+
+    args = parser.parse_args()
+
+    project_name = args.project_name
+
+    config = {
+        "algorithm": args.algo,
+        "policy": args.policy,
+        "env": args.env,
+        "env_config": {"opponents": args.env_opponents,
+                       "switching_prob": args.env_switching},
+        "total_timesteps": args.timesteps,
+        "log_interval": args.log_inter,
+        "selfplay_start": args.selfplay,
+    }
+
+    # python arena.py project_a -algo MCTS -policy MCTSPolicy -env TicTacToe -env_opponents random reaction -env_switching 0.5 -timesteps 10000 -log_inter 100 -selfplay 1000
+
+    # config = {
+    #     "algorithm": "MCTS",
+    #     "policy": "MCTSPolicy",
+    #     "env": "TicTacToe",
+    #     "env_config": {"opponents": ["random", "reaction"],
+    #                    "switching_prob": 0.5},
+    #     "total_timesteps": 10000,
+    #     "log_interval": 100,
+    #     "selfplay_start": 1000
+    # }
+
+    if config["algorithm"] == "MCTS":
+        main_MCTS(project_name=project_name, config=config)
+    elif config["algorithm"] in ["QLearning", "Sarsa", "ExpectedSarsa"]:
+        main_QLearning(project_name=project_name, config=config)
