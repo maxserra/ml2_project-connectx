@@ -72,7 +72,7 @@ class MCTSPolicy(BasePolicy):
         values_sorted = np.array(list(map(action_values.get, actions_sorted)))
         count_sorted = np.array(list(map(selection_count.get, actions_sorted)))
 
-        uct_values = values_sorted + exploration_cte * np.sqrt(count_sorted.sum()) / (1 + count_sorted)
+        uct_values = values_sorted + exploration_cte * np.sqrt(count_sorted.sum() / (1 + count_sorted))
 
         return {action: value for action, value in zip(actions_sorted, uct_values)}
 
@@ -92,7 +92,7 @@ class MCTSPolicy(BasePolicy):
 
         exploration_cte = scipy.special.softmax(values_sorted)
 
-        uct_values = values_sorted + exploration_cte * np.sqrt(count_sorted.sum()) / (1 + count_sorted)
+        uct_values = values_sorted + exploration_cte * np.sqrt(count_sorted.sum() / (1 + count_sorted))
 
         return {action: value for action, value in zip(actions_sorted, uct_values)}
 
